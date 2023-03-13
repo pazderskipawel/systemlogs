@@ -1,0 +1,1 @@
+This script raceives a system logs and returns them in JSON format

@@ -46,10 +46,15 @@ def get_common_logs(num_logs):
 
     elif system == 'Linux':
         # Get Linux system logs
-        output = subprocess.check_output(['journalctl', f'-a --lines {num_logs}'])
-        logs = output.decode('utf-8', 'ignore').split('\n')
-        # Filter out Linux-specific data
-        logs = [log for log in logs if not log.startswith('--')]
+        try:
+            output = subprocess.check_output(['journalctl', f'-a --lines {num_logs}'])
+            logs = output.decode('utf-8', 'ignore').split('\n')
+            # Filter out Linux-specific data
+            logs = [log for log in logs if not log.startswith('--')]
+        except:
+            # If journalctl fails, try using dmesg
+            output = subprocess.check_output(['dmesg', f'--level=err,warn', f'--count={num_logs}'])
+            logs = output.decode('utf-8', 'ignore').split('\n')
 
     # Create a list of dictionaries containing the filtered logs
     log_list = []
