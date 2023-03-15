@@ -1,20 +1,28 @@
-import subprocess
-import json
-import platform
+import threading
+import time
+from log_workers import LogWorker, LogSender
 
-def main(num_logs):
+logs_queue = LogWorker().logs_queue
+log_worker = LogWorker()
+log_sender = LogSender(logs_queue)
 
-    if platform.system() == 'Windows':
-        cmd = ['powershell', '-Command', f'Get-WinEvent -LogName System -MaxEvents {num_logs}  | ConvertTo-Json']
-    else:
-        cmd = ['journalctl', f'-n {num_logs}', '--output=json']
 
-    output = subprocess.check_output(cmd, encoding='utf-8', errors='replace')
-    logs = output.strip().split('\n')
+def stop_workers():
+    log_worker.stop()
+    log_sender.stop()
 
-    for log in logs:
-        print(log)
+    log_worker.join()
+    log_sender.join()
+
+
+def main():
+    log_worker.start()
+    log_sender.start()
+
+    input("Press Enter to stop workers...\n")
+
+    stop_workers()
+
 
 if __name__ == '__main__':
-    num_logs = 100
-    main(num_logs)
+    main()
