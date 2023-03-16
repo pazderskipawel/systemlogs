@@ -1,3 +1,4 @@
+import os
 import threading
 import queue
 import time
@@ -22,10 +23,10 @@ class LogWorker(threading.Thread):
         return logs
 
     def get_linux_logs(self, num_logs):
-        cmd = ['journalctl', '--output=json']
-        output = subprocess.check_output(cmd, encoding='utf-8', errors='replace')
+        cmd = [f"journalctl --lines={num_logs} --output=json"]
+        output = subprocess.check_output(cmd, encoding='utf-8', errors='replace', shell=True, executable="/bin/bash")
         logs = output.strip().split('\n')
-        return logs[:num_logs]
+        return logs
 
     def run(self):
         while not self.stopped:
