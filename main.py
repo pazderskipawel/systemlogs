@@ -8,17 +8,17 @@ import platform
 
 
 class LogWorker(threading.Thread):
-    def __init__(self, num_logs):
+    def __init__(self, num_logs, batch_size):
         super().__init__()
         self.num_logs = num_logs
-        logs = self.get_logs(num_logs)
-        self.logs = logs
+        self.batch_size = batch_size
+        self.logs = self.get_logs()
         self.stopped = False
 
     def stop(self):
         self.stopped = True
 
-    def get_logs(self, num_logs):
+    def get_logs(self):
         if platform.system() == 'Windows':
             logs = self.get_windows_logs(self.num_logs)
         else:
@@ -27,7 +27,7 @@ class LogWorker(threading.Thread):
         return logs
 
     def get_windows_logs(self, num_logs):
-        cmd = f'powershell -Command Get-WinEvent -LogName System -MaxEvents {num_logs} | Select-Object TimeCreated, ProcessId, LogName, Level, ProviderName, Message | ConvertTo-Json'
+        cmd = f'powershell -Command Get-WinEvent -LogName System -MaxEvents {num_logs} | Select-Object @{{Name=\'TimeCreated\'; Expression={{(Get-Date $_.TimeCreated).ToString()}}}}, ProcessId, LogName, Level, ProviderName, Message | ConvertTo-Json'
         return subprocess.check_output(cmd, encoding='utf-8', errors='replace')
 
     def get_linux_logs(self, num_logs):
@@ -36,15 +36,15 @@ class LogWorker(threading.Thread):
 
     def run(self):
         while not self.stopped:
-            print(self.logs)
-            log_queue.put(self.logs)
+            logs = self.get_logs()
+            batch = [logs[i:i+self.batch_size] for i in range(0, len(logs), self.batch_size)]
+            log_queue.put(batch)
             time.sleep(10)
 
 
 class LogSender(threading.Thread):
-    def __init__(self, batch_size, endpoint):
+    def __init__(self, endpoint):
         super().__init__()
-        self.batch_size = batch_size
         self.endpoint = endpoint
         self.stopped = False
 
@@ -53,23 +53,15 @@ class LogSender(threading.Thread):
 
     def run(self):
         while not self.stopped or not log_queue.empty():
-#TODO batch in LogWorker
-            batch = []
-            for i in range(self.batch_size):
-                try:
-                    log = log_queue.get(timeout=1)
-                    batch.append(log)
-                except queue.Empty:
-                    break
-
-            if batch:
-                try:
-                    requests.post(self.endpoint, json=batch)
-                    print("Logs sent")
-                except requests.exceptions.RequestException as e:
-                    print(f"Failed to send logs: {e}")
-
-            #
+            try:
+                batch = log_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+            try:
+                requests.post(self.endpoint, json=batch)
+                print("Logs sent")
+            except requests.exceptions.RequestException as e:
+                print(f"Failed to send logs: {e}")
             time.sleep(10)
 
 
@@ -79,8 +71,8 @@ if __name__ == '__main__':
     endpoint = "http://localhost:5000/logs"
 
     log_queue = queue.Queue()
-    log_worker = LogWorker(num_logs)
-    log_sender = LogSender(batch_size, endpoint)
+    log_worker = LogWorker(num_logs, batch_size)
+    log_sender = LogSender(endpoint)
 
     try:
         log_worker.start()
@@ -90,6 +82,6 @@ if __name__ == '__main__':
         print("Stopping...")
     finally:
         log_worker.stop()
-        log_sender.stop()
         log_worker.join()
+        log_sender.stop()
         log_sender.join()
