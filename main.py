@@ -11,40 +11,34 @@ class LogWorker(threading.Thread):
     def __init__(self, num_logs):
         super().__init__()
         self.num_logs = num_logs
+        logs = self.get_logs(num_logs)
+        self.logs = logs
         self.stopped = False
 
     def stop(self):
         self.stopped = True
 
-    def get_windows_logs(self, num_logs):
-        cmd = ['powershell', '-Command', f'Get-WinEvent -LogName System -MaxEvents {num_logs} -Oldest | ConvertTo-Json']
-        output = subprocess.check_output(cmd, encoding='utf-8', errors='replace')
-        logs = output.strip().split('\n')
+    def get_logs(self, num_logs):
+        if platform.system() == 'Windows':
+            logs = self.get_windows_logs(self.num_logs)
+        else:
+            logs = self.get_linux_logs(self.num_logs)
+        logs = logs.strip().split('\n')
         return logs
 
+    def get_windows_logs(self, num_logs):
+        cmd = f'powershell -Command Get-WinEvent -LogName System -MaxEvents {num_logs} | Select-Object TimeCreated, ProcessId, LogName, Level, ProviderName, Message | ConvertTo-Json'
+        return subprocess.check_output(cmd, encoding='utf-8', errors='replace')
+
     def get_linux_logs(self, num_logs):
-        cmd = [f"journalctl --lines={num_logs} --output=json"]
-        output = subprocess.check_output(cmd, encoding='utf-8', errors='replace', shell=True, executable="/bin/bash")
-        logs = output.strip().split('\n')
-        return logs
+        cmd = f'journalctl --lines={num_logs} --output=json | jq \'[.[] | {{TimeCreated: .__REALTIME_TIMESTAMP / 1000000, ProcessId: ._PID, LogName: ._SYSLOG_IDENTIFIER ,Level: .PRIORITY, ProviderName: .SYSLOG_IDENTIFIER, Message: .MESSAGE}}]\''
+        return subprocess.check_output(cmd, encoding='utf-8', errors='replace', shell=True, executable="/bin/bash")
 
     def run(self):
         while not self.stopped:
-            if platform.system() == 'Windows':
-                logs = self.get_windows_logs(self.num_logs)
-            else:
-                logs = self.get_linux_logs(self.num_logs)
-            print(logs)
-            log_queue.put(logs)
-            # for log in logs:
-            #     print(log)
-            #     log_queue.put(log)
-
-            # Check the stopped flag before sleeping
-            for i in range(10):
-                if self.stopped:
-                    return  # exit the thread
-                time.sleep(1)
+            print(self.logs)
+            log_queue.put(self.logs)
+            time.sleep(10)
 
 
 class LogSender(threading.Thread):
@@ -59,6 +53,7 @@ class LogSender(threading.Thread):
 
     def run(self):
         while not self.stopped or not log_queue.empty():
+#TODO batch in LogWorker
             batch = []
             for i in range(self.batch_size):
                 try:
@@ -74,11 +69,8 @@ class LogSender(threading.Thread):
                 except requests.exceptions.RequestException as e:
                     print(f"Failed to send logs: {e}")
 
-            # Check the stopped flag before sleeping
-            for i in range(10):
-                if self.stopped and log_queue.empty():
-                    return  # exit the thread
-                time.sleep(1)
+            #
+            time.sleep(10)
 
 
 if __name__ == '__main__':
