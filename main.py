@@ -5,6 +5,7 @@ import time
 import subprocess
 import requests
 import platform
+import json
 
 
 class LogWorker(threading.Thread):
@@ -23,21 +24,38 @@ class LogWorker(threading.Thread):
             logs = self.get_windows_logs(self.num_logs)
         else:
             logs = self.get_linux_logs(self.num_logs)
-        logs = logs.strip().split('\n')
         return logs
 
     def get_windows_logs(self, num_logs):
-        cmd = f'powershell -Command Get-WinEvent -LogName System -MaxEvents {num_logs} | Select-Object @{{Name=\'TimeCreated\'; Expression={{(Get-Date $_.TimeCreated).ToString()}}}}, ProcessId, LogName, Level, ProviderName, Message | ConvertTo-Json'
-        return subprocess.check_output(cmd, encoding='utf-8', errors='replace')
+        cmd = f'powershell -Command Get-WinEvent -FilterHashtable @{{logname=\'Application\',\'System\'; StartTime=(Get-Date).AddMinutes(-60)}} -MaxEvents {num_logs} | Select-Object @{{Name=\'TimeCreated\'; Expression={{(Get-Date $_.TimeCreated).ToString()}}}}, Level, Message, ProviderName, MachineName, ContainerName | ConvertTo-Json'
+        output = subprocess.check_output(cmd, encoding='utf-8', errors='replace')
+        logs = json.loads(output)
+        result = []
+        for log in logs:
+            result.append({
+                'os': 'Windows',
+                'severity': log['Level'],
+                'message': log['Message'],
+                'timestamp': log['TimeCreated'],
+                'hostname': log['MachineName'],
+                'unit': log['ProviderName'],
+                'type': log['ContainerName'],
+                'raw': log
+            })
+        return result
 
     def get_linux_logs(self, num_logs):
-        cmd = f'journalctl --lines={num_logs} --output=json | jq \'[.[] | {{TimeCreated: .__REALTIME_TIMESTAMP / 1000000, ProcessId: ._PID, LogName: ._SYSLOG_IDENTIFIER ,Level: .PRIORITY, ProviderName: .SYSLOG_IDENTIFIER, Message: .MESSAGE}}]\''
-        return subprocess.check_output(cmd, encoding='utf-8', errors='replace', shell=True, executable="/bin/bash")
+        cmd = f'journalctl --lines={num_logs} --output=json | jq \'.[] | {{os: "Linux", severity: .PRIORITY, message: .MESSAGE, timestamp: (.__REALTIME_TIMESTAMP / 1000000 | floor), hostname: hosthostname, unit: ._SYSTEMD_UNIT, type: if (.["_EXE"] | test("(?i)/opt|/snap")) then "Application" else "System" end, raw: .}}\''
+        output = subprocess.check_output(cmd, encoding='utf-8', errors='replace', shell=True, executable="/bin/bash")
+        logs = json.loads(output)
+        return logs
 
     def run(self):
         while not self.stopped:
             logs = self.get_logs()
-            batch = [logs[i:i+self.batch_size] for i in range(0, len(logs), self.batch_size)]
+            batch = []
+            for _ in range(self.batch_size):
+                batch.append(self.get_logs())
             log_queue.put(batch)
             time.sleep(10)
 
@@ -58,8 +76,12 @@ class LogSender(threading.Thread):
             except queue.Empty:
                 continue
             try:
-                requests.post(self.endpoint, json=batch)
-                print("Logs sent")
+                response = requests.post(self.endpoint, json=batch)
+                if response.status_code == 200:
+                    num_logs = sum([len(item) for item in batch])
+                    print(f"Sent batch with {num_logs} logs")
+                else:
+                    print(f"Failed to send logs with status code {response.status_code}")
             except requests.exceptions.RequestException as e:
                 print(f"Failed to send logs: {e}")
             time.sleep(10)
@@ -67,7 +89,7 @@ class LogSender(threading.Thread):
 
 if __name__ == '__main__':
     num_logs = 10
-    batch_size = 5
+    batch_size = 2  # how many times it gets logs eg. if num_log = 10 and batch_size = 2 then 20 logs will be sent
     endpoint = "http://localhost:5000/logs"
 
     log_queue = queue.Queue()
